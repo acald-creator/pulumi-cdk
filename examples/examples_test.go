@@ -15,6 +15,7 @@
 package examples
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -22,6 +23,8 @@ import (
 	"testing"
 
 	"github.com/pulumi/pulumi/pkg/v3/testing/integration"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func getPrefix() string {
@@ -64,11 +67,53 @@ func getBaseOptions(t *testing.T) integration.ProgramTestOptions {
 			"aws-native:region": envRegion,
 			"prefix":            prefix,
 		},
-		// some flakiness in some resource creation
-		// @see https://github.com/pulumi/pulumi-aws-native/issues/1714
-		RetryFailedSteps:     true,
-		ExpectRefreshChanges: true,
 		SkipRefresh:          true,
-		Quick:                true,
+		ExpectRefreshChanges: true,
+	}
+}
+
+func programTestIgnoreDestroyErrors(
+	t *testing.T,
+	opts *integration.ProgramTestOptions,
+) {
+	pt := integration.ProgramTestManualLifeCycle(t, opts)
+
+	require.Falsef(t, opts.DestroyOnCleanup, "DestroyOnCleanup is not supported")
+	require.Falsef(t, opts.RunUpdateTest, "RunUpdateTest is not supported")
+
+	destroyStack := func() {
+		destroyErr := pt.TestLifeCycleDestroy()
+		if destroyErr != nil {
+			t.Logf("IgnoreDestroyErrors: ignoring %v", destroyErr)
+		}
+	}
+
+	// Inlined pt.TestLifeCycleInitAndDestroy()
+	testLifeCycleInitAndDestroy := func() error {
+		err := pt.TestLifeCyclePrepare()
+		if err != nil {
+			return fmt.Errorf("copying test to temp dir: %w", err)
+		}
+
+		pt.TestFinished = false
+		defer pt.TestCleanUp()
+
+		err = pt.TestLifeCycleInitialize()
+		if err != nil {
+			return fmt.Errorf("initializing test project: %w", err)
+		}
+		// Ensure that before we exit, we attempt to destroy and remove the stack.
+		defer destroyStack()
+
+		if err = pt.TestPreviewUpdateAndEdits(); err != nil {
+			return fmt.Errorf("running test preview, update, and edits: %w", err)
+		}
+		pt.TestFinished = true
+		return nil
+	}
+
+	err := testLifeCycleInitAndDestroy()
+	if !errors.Is(err, integration.ErrTestFailed) {
+		assert.NoError(t, err)
 	}
 }
