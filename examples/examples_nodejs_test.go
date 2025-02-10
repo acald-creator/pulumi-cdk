@@ -17,6 +17,7 @@ package examples
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"path/filepath"
@@ -64,7 +65,6 @@ func TestALB(t *testing.T) {
 	test := getJSBaseOptions(t).
 		With(integration.ProgramTestOptions{
 			Dir:              filepath.Join(getCwd(t), "alb"),
-			NoParallel:       true, // Resources may collide with TestFargate
 			RetryFailedSteps: true, // Workaround for https://github.com/pulumi/pulumi-aws-native/issues/1186
 		})
 
@@ -74,9 +74,10 @@ func TestALB(t *testing.T) {
 func TestFargate(t *testing.T) {
 	test := getJSBaseOptions(t).
 		With(integration.ProgramTestOptions{
-			Dir:              filepath.Join(getCwd(t), "fargate"),
-			NoParallel:       true,
-			RetryFailedSteps: true, // Workaround for https://github.com/pulumi/pulumi-aws-native/issues/1186
+			Dir:                    filepath.Join(getCwd(t), "fargate"),
+			RetryFailedSteps:       true, // Workaround for https://github.com/pulumi/pulumi-aws-native/issues/1186
+			Quick:                  false,
+			SkipEmptyPreviewUpdate: false,
 			ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 				integration.AssertHTTPResultWithRetry(t, stack.Outputs["loadBalancerURL"], nil, time.Duration(time.Minute*1), func(s string) bool {
 					return s == "Hello, world!"
@@ -90,7 +91,15 @@ func TestFargate(t *testing.T) {
 func TestS3ObjectLambda(t *testing.T) {
 	test := getJSBaseOptions(t).
 		With(integration.ProgramTestOptions{
-			Dir: filepath.Join(getCwd(t), "s3-object-lambda"),
+			Dir:                  filepath.Join(getCwd(t), "s3-object-lambda"),
+			ExpectRefreshChanges: false,
+			EditDirs: []integration.EditDir{
+				{
+					Dir:             filepath.Join(getCwd(t), "s3-object-lambda"),
+					ExpectNoChanges: true,
+					Additive:        true,
+				},
+			},
 		})
 
 	integration.ProgramTest(t, &test)
@@ -113,6 +122,17 @@ func TestCloudFront(t *testing.T) {
 
 	integration.ProgramTest(t, &test)
 }
+
+func TestCloudFrontEdge(t *testing.T) {
+	t.Skip("Lambda@Edge resources cannot be cleaned up in CI")
+	test := getJSBaseOptions(t).
+		With(integration.ProgramTestOptions{
+			Dir: filepath.Join(getCwd(t), "cloudfront-lambda-edge"),
+		})
+
+	integration.ProgramTest(t, &test)
+}
+
 func TestLookups(t *testing.T) {
 	test := getJSBaseOptions(t).
 		With(integration.ProgramTestOptions{
@@ -236,6 +256,35 @@ func TestScalableWebhook(t *testing.T) {
 	integration.ProgramTest(t, &test)
 }
 
+func TestEks(t *testing.T) {
+	test := getJSBaseOptions(t).
+		With(integration.ProgramTestOptions{
+			Dir: filepath.Join(getCwd(t), "eks"),
+			ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+				t.Helper()
+				require.NotEmpty(t, stack.Outputs["albAddress"], "Expected albAddress to be set")
+				t.Logf("Outputs: %v", stack.Outputs)
+				albAddress := stack.Outputs["albAddress"].(string)
+				require.NotEmpty(t, stack.Outputs["clusterName"], "Expected clusterName to be set")
+
+				integration.AssertHTTPResultWithRetry(t, fmt.Sprintf("http://%s:80", albAddress), nil, 10*time.Minute, func(body string) bool {
+					t.Logf("Body: %s", body)
+					var data map[string]interface{}
+					err := json.Unmarshal([]byte(body), &data)
+					require.NoError(t, err)
+					require.NotNil(t, data)
+					require.NotEmpty(t, data["message"], "Expected message to be set")
+					return assert.Contains(t, body, "greetings from podinfo")
+				})
+			},
+		})
+
+	// Deleting stacks with EKS clusters can sometimes fail due to DependencyViolation caused by leftover ENIs.
+	// Try destroying the cluster to keep the test account clean but do not fail the test if it fails to destroy.
+	// This weakens the test but makes CI deterministic.
+	programTestIgnoreDestroyErrors(t, &test)
+}
+
 func TestStackProvider(t *testing.T) {
 	// App will use default provider and one stack will use explicit provider
 	// with region=us-east-1
@@ -319,6 +368,22 @@ func TestAPIWebsocketLambdaDynamoDB(t *testing.T) {
 				t.Logf("Outputs: %v", stack.Outputs)
 				url := stack.Outputs["url"].(string)
 				websocketValidation(t, url)
+			},
+		})
+
+	integration.ProgramTest(t, &test)
+}
+
+func TestLookupAzs(t *testing.T) {
+	test := getJSBaseOptions(t).
+		With(integration.ProgramTestOptions{
+			Dir: filepath.Join(getCwd(t), "lookup-azs"),
+			ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+				t.Helper()
+				t.Logf("Outputs: %v", stack.Outputs)
+				azs := stack.Outputs["azs"].([]interface{})
+				// by default the CDK will use 2 AZs so this makes sure our logic is working
+				assert.Lenf(t, azs, 3, "Expected 2 AZs, got %d", len(azs))
 			},
 		})
 
