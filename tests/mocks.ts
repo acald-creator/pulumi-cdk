@@ -8,8 +8,8 @@ import {
     FileAssetSource,
     ISynthesisSession,
 } from 'aws-cdk-lib/core';
-import { AppComponent, AppOptions } from '../src/types';
-import { MockCallArgs, MockResourceArgs } from '@pulumi/pulumi/runtime';
+import { AppComponent, AppOptions, AppResourceOptions } from '../src/types';
+import { MockCallArgs, MockCallResult, MockResourceArgs } from '@pulumi/pulumi/runtime';
 import { Construct } from 'constructs';
 import { App, Stack } from '../src/stack';
 import { PulumiSynthesizerBase } from '../src/synthesizer';
@@ -37,11 +37,7 @@ export class MockAppComponent extends pulumi.ComponentResource implements AppCom
     }
 }
 
-export async function testApp(
-    fn: (scope: Construct) => void,
-    options?: pulumi.ComponentResourceOptions,
-    withEnv?: boolean,
-) {
+export async function testApp(fn: (scope: Construct) => void, options?: AppResourceOptions, withEnv?: boolean) {
     const env = withEnv ? { account: '12345678912', region: 'us-east-1' } : undefined;
     class TestStack extends Stack {
         constructor(app: App, id: string) {
@@ -82,9 +78,12 @@ export async function awaitApp(app: App): Promise<void> {
     await Promise.all(app.dependencies.flatMap((d) => promiseOf(d.urn)));
 }
 
-export function setMocks(resources?: MockResourceArgs[]) {
+export function setMocks(resources?: MockResourceArgs[], overrides?: { [pulumiType: string]: MockCallResult }) {
     const mocks: pulumi.runtime.Mocks = {
         call: (args: MockCallArgs): { [id: string]: any } => {
+            if (overrides && args.token in overrides) {
+                return overrides[args.token];
+            }
             switch (args.token) {
                 case 'aws-native:index:getAccountId':
                     return {
@@ -118,6 +117,11 @@ export function setMocks(resources?: MockResourceArgs[]) {
                 case 'aws:index/getRegion:getRegion':
                     return {
                         name: 'us-east-2',
+                    };
+                case 'aws:ssm/getParameter:getParameter':
+                    return {
+                        type: 'String',
+                        value: 'abcd',
                     };
                 case 'aws:secretsmanager/getSecretVersion:getSecretVersion':
                     return {
@@ -181,7 +185,18 @@ export function setMocks(resources?: MockResourceArgs[]) {
                             },
                         },
                     };
-                default:
+                case 'aws-native:s3:Bucket':
+                    resources?.push(args);
+                    return {
+                        id: args.name + '_id',
+                        state: {
+                            ...args.inputs,
+                            id: args.name + '_id',
+                            arn: args.name + '_arn',
+                            bucketName: args.inputs?.bucketName ?? args.name + '_name',
+                        },
+                    };
+                default: {
                     resources?.push(args);
                     const attrName = args.type.split(':')[2];
                     const sdkName = toSdkName(attrName);
@@ -197,6 +212,7 @@ export function setMocks(resources?: MockResourceArgs[]) {
                             [sdkName + 'Name']: id + '_name',
                         },
                     };
+                }
             }
         },
     };

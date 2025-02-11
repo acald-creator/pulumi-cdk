@@ -1,22 +1,91 @@
-# Pulumi CDK Adapter (preview)
+# Pulumi CDK Adapter
 
-The Pulumi CDK Adapter is a library that enables
-[Pulumi](https://github.com/pulumi/pulumi) programs to use [AWS
-CDK](https://github.com/aws/aws-cdk) constructs.
+The pulumi-cdk library provides access to the many high-level libraries ('constructs') built by service
+teams at AWS and by [the AWS CDK community](https://constructs.dev/).
 
-The adapter allows writing AWS CDK code as part of an AWS CDK Stack inside a
-Pulumi program, and having the resulting AWS resources be deployed and managed
-via Pulumi.  Outputs of resources defined in a Pulumi program can be passed
-into AWS CDK Constructs, and outputs from AWS CDK stacks can be used as inputs
-to other Pulumi resources.
+The adapter allows writing [AWS CDK](https://docs.aws.amazon.com/cdk/v2/guide/home.html) code inside a
+Pulumi program, and having the resulting AWS resources be deployed and managed via Pulumi. Pulumi and CDK resources can
+seamlessly interact with each other. Outputs of resources defined in a Pulumi program can be passed into AWS CDK Constructs,
+and outputs from AWS CDK stacks can be used as inputs to other Pulumi resources.
 
-> Note: Currently, the Pulumi CDK Adapter preview is available only for
-> TypeScript/JavaScript users.
+## Table of Contents
 
-For example, to construct an [AWS AppRunner `Service`
-resource](https://docs.aws.amazon.com/cdk/api/v2/docs/aws-apprunner-alpha-readme.html)
-from within a Pulumi program, and export the resulting service's URL as as
-Pulumi Stack Output you write the following:
+- [Pulumi CDK Adapter](#pulumi-cdk-adapter)
+  - [Getting Started](#getting-started)
+  - [Use Pulumi resources with CDK Constructs](#use-pulumi-resources-with-cdk-constructs)
+  - [Create Pulumi outputs](#create-pulumi-outputs)
+  - [Customizing providers](#customizing-providers)
+  - [CDK Lookups](#cdk-lookups)
+  - [Using Pulumi Policy Packs](#using-pulumi-policy-packs)
+  - [CDK Aspects](#cdk-aspects)
+  - [CDK Policy Validation Plugins](#cdk-policy-validation-plugins)
+  - [Mapping AWS resources](#mapping-aws-resources)
+  - [Using Assets](#using-assets)
+  - [Feature Flags](#feature-flags)
+  - [Setting Pulumi options for CDK resources](#setting-pulumi-options-for-cdk-resources)
+  - [Pulumi Synthesizer](#pulumi-synthesizer)
+  - [Unsupported Features](#unsupported-features)
+  - [AWS Cloud Control AutoNaming Config](#aws-cloud-control-autonaming-config)
+  - [Bootstrapping](#bootstrapping)
+  - [Multiple Stacks](#multiple-stacks)
+  - [API](#api)
+  - [Contributing](#contributing)
+
+
+## Getting Started
+
+To get started with CDK on Pulumi first [download and install Pulumi](https://www.pulumi.com/docs/install/), and [configure it to work with your AWS account](https://www.pulumi.com/registry/packages/aws/installation-configuration/).
+Next, create a Pulumi TypeScript project, install the required packages, and
+ensure you have configured the AWS providers.
+
+```bash
+$ pulumi new aws-typescript
+$ npm install @pulumi/aws @pulumi/aws-native @pulumi/cdk @pulumi/docker-build @pulumi/pulumi aws-cdk-lib
+$ pulumi config set aws-native:region us-east-2
+$ pulumi config set aws:region us-east-2
+```
+
+### cdk.json File
+
+Settings for CDK applications are typically stored in a `cdk.json` file at the
+root of the project. It is recommended that you create one and populate it with
+a couple of settings.
+
+- `app`: This setting controls what command to run in order to synthesize the
+    CDK application.
+- `output`: The directory location where the CDK output will be placed. If this
+    is not specified it will be placed in a system temporary directory and could
+    cause issues such as permanent diffs in docker image assets.
+- `context`: Any context values, specifically [CDK features flags](https://docs.aws.amazon.com/cdk/v2/guide/featureflags.html).
+    You should populate all existing feature flags when you create a new
+    application. A full list can be found [here](#feature-flags)
+
+```json
+{
+  "app": "npx ts-node -P tsconfig.json --prefer-ts-exts src/main.ts",
+  "output": "cdk.out",
+  "context": {
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    ...other feature flags
+  }
+}
+
+```
+
+## Example
+
+After following the [getting started](#getting-started) steps, the next step is
+to setup your application. For this example we are using the [AWS AppRunner serivce](https://docs.aws.amazon.com/cdk/api/v2/docs/aws-apprunner-alpha-readme.html).
+We will create an AppRunner `Service` from within our Pulumi program, and export the resulting service's URL as a
+Pulumi Stack Output.
+
+First install the additional `aws-apprunner-alpha` CDK package:
+
+```bash
+$ npm install @aws-cdk/aws-apprunner-alpha
+```
+
+Then update the `index.ts` file with the following code:
 
 ```ts
 import * as pulumi from '@pulumi/pulumi';
@@ -653,6 +722,10 @@ const app = new pulumicdk.App('app', (scope: pulumicdk.App) => {
 });
 ```
 
+> **Note** If you have issues with permanent asset diffs, make sure you have
+> created a [cdk.json](#cdk.json-file) with the `outdir` set to a project relative
+> directory.
+
 ## Feature Flags
 
 Feature flags in Pulumi CDK work the exact same way as in AWS CDK and can be set
@@ -800,6 +873,121 @@ create the following staging resources.
   - `imageTagMutability`: `IMMUTABLE`
 2. `aws.ecr.LifecyclePolicy`
   - Expire old images when the number of images > 3
+
+## Multiple Stacks
+
+It is possible to use multiple CDK Stacks in your Pulumi CDK application, but
+you probably don't need/want to. According to [AWS CDK best practices](https://docs.aws.amazon.com/cdk/v2/guide/best-practices.html#best-practices-apps)
+you should separate your application into multiple stacks based on your
+deployment patterns, keeping as many resources in the same stack as possible.
+Typically the only three scenarios that justify splitting resources into separate
+stacks are:
+
+1. CloudFormation stack resource limits
+2. Keeping stateful resources (like databases) in a separate stack so that you
+   can enable termination protection on that stack.
+3. Creating resources in multiple regions require you to create a stack per
+   region.
+
+When using Pulumi CDK you only need to create multiple Stacks for #3. Currently
+CDK Stacks in a Pulumi application are only needed when you want to configure a
+different set of Pulumi [resource options](https://www.pulumi.com/docs/iac/concepts/options/) (e.g. `providers`). Otherwise all
+resources are created as part of the same [Pulumi Stack](https://www.pulumi.com/docs/iac/concepts/update-plans/)
+and there is no benefit in splitting resources into multiple CDK Stacks.
+
+### Multi Region
+
+If you need to create resources in multiple regions you can use multiple CDK
+Stacks. The below example shows an application that creates a Stack in
+`us-east-1` in order to create a Lambda@Edge function and then a second stack in
+`us-east-2` which creates the CloudFront resource.
+
+```ts
+import * as ccapi from '@pulumi/aws-native';
+import * as aws from '@pulumi/aws';
+import * as pulumi from '@pulumi/pulumi';
+import * as pulumicdk from '@pulumi/cdk';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as cloudfront_origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+
+interface CloudFrontAppStackProps {
+    edgeFunctionArn: pulumi.Output<string>;
+}
+
+class EdgeFunctionStack extends pulumicdk.Stack {
+    public versionArn: pulumi.Output<string>;
+    constructor(scope: pulumicdk.App, id: string) {
+        super(scope, id, {
+            props: {
+                env: {
+                    region: 'us-east-1',
+                },
+            },
+            providers: [
+                new ccapi.Provider('ccapi', {
+                    region: 'us-east-1',
+                }),
+                new aws.Provider('aws', {
+                    region: 'us-east-1',
+                }),
+            ],
+        });
+
+        const handler = new cloudfront.experimental.EdgeFunction(this, 'edge-handler', {
+            runtime: lambda.Runtime.NODEJS_LATEST,
+            handler: 'index.handler',
+            code: lambda.Code.fromInline('export const handler = async () => { return "hello" }'),
+        });
+
+        this.versionArn = this.asOutput(handler.currentVersion.edgeArn);
+    }
+}
+
+class CloudFrontAppStack extends pulumicdk.Stack {
+    constructor(scope: pulumicdk.App, id: string, props: CloudFrontAppStackProps) {
+        super(scope, id);
+
+
+        const bucket = new s3.Bucket(this, 'Bucket');
+
+        new cloudfront.Distribution(this, 'distro', {
+            defaultBehavior: {
+                origin: new cloudfront_origins.S3Origin(bucket),
+                edgeLambdas: [
+                    {
+                        eventType: cloudfront.LambdaEdgeEventType.ORIGIN_REQUEST,
+                        functionVersion: lambda.Version.fromVersionArn(
+                            this,
+                            'edge',
+                            pulumicdk.asString(props.edgeFunctionArn),
+                        ),
+                    },
+                ],
+            },
+        });
+    }
+}
+
+class MyApp extends pulumicdk.App {
+    constructor() {
+        super('app', (scope: pulumicdk.App) => {
+            const edgeStack = new EdgeFunctionStack(scope, 'edge-function');
+            new CloudFrontAppStack(scope, 'cloudfront-app', {
+                edgeFunctionArn: edgeStack.versionArn,
+            });
+        });
+    }
+}
+const app = new MyApp();
+const output = app.outputs['url'];
+export const url = pulumi.interpolate`https://${output}`;
+```
+
+Pulumi CDK does not support native cross stack references. Instead, you can
+convert a value to a Pulumi Output in order to reference the value in a separate
+stack.
 
 ## API
 

@@ -166,6 +166,23 @@ func TestCustomResource(t *testing.T) {
 	integration.ProgramTest(t, &test)
 }
 
+func TestNestedStacks(t *testing.T) {
+	test := getJSBaseOptions(t).
+		With(integration.ProgramTestOptions{
+			Dir: filepath.Join(getCwd(t), "nested-stacks"),
+			ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+				t.Logf("Outputs: %v", stack.Outputs)
+				bucketUrl := stack.Outputs["bucketWebsiteUrl"].(string)
+				assert.NotEmpty(t, bucketUrl)
+				integration.AssertHTTPResultWithRetry(t, bucketUrl, nil, 60*time.Second, func(body string) bool {
+					return assert.Equal(t, "Hello, World!", body, "Body should equal 'Hello, World!', got %s", body)
+				})
+			},
+		})
+
+	integration.ProgramTest(t, &test)
+}
+
 func TestReplaceOnChanges(t *testing.T) {
 	test := getJSBaseOptions(t).
 		With(integration.ProgramTestOptions{
@@ -174,6 +191,37 @@ func TestReplaceOnChanges(t *testing.T) {
 				{
 					Dir:      filepath.Join(getCwd(t), "replace-on-changes/step2"),
 					Additive: true,
+				},
+			},
+		})
+
+	integration.ProgramTest(t, &test)
+}
+
+func TestSsmDynamic(t *testing.T) {
+	test := getJSBaseOptions(t).
+		With(integration.ProgramTestOptions{
+			Dir: filepath.Join(getCwd(t), "ssm-dynamic"),
+			EditDirs: []integration.EditDir{
+				{
+					Dir:      filepath.Join(getCwd(t), "ssm-dynamic/step2"),
+					Additive: true,
+					ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+						t.Logf("\nOutputs: %v\n\n", stack.Outputs)
+
+						stringValue := stack.Outputs["stringValue"].(string)
+						assert.Equal(t, "testvalue", stringValue)
+
+						stringListValue := stack.Outputs["stringListValue"].([]interface{})
+						assert.Equal(t, []interface{}{"abcd", "xyz"}, stringListValue)
+
+						dynamicStringValue := stack.Outputs["dynamicStringValue"].(string)
+						assert.Equal(t, "testvalue", dynamicStringValue)
+
+						dyanmicStringListValue := stack.Outputs["dynamicStringListValue"].([]interface{})
+						assert.Equal(t, []interface{}{"abcd", "xyz"}, dyanmicStringListValue)
+
+					},
 				},
 			},
 		})
@@ -276,4 +324,19 @@ func TestKinesis(t *testing.T) {
 		})
 
 	integration.ProgramTest(t, &test)
+}
+
+func TestUnsupportedError(t *testing.T) {
+	var output bytes.Buffer
+
+	test := getJSBaseOptions(t).
+		With(integration.ProgramTestOptions{
+			Dir:           filepath.Join(getCwd(t), "unsupported-error"),
+			Stderr:        &output,
+			SkipPreview:   true,
+			ExpectFailure: true,
+		})
+
+	integration.ProgramTest(t, &test)
+	assert.Contains(t, output.String(), "Resource type 'AWS::ServiceCatalog::Portfolio' is not supported by AWS Cloud Control.")
 }
